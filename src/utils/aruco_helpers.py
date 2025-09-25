@@ -3,7 +3,7 @@
 ArUco helpers: dictionary selection, detector params, and marker printing CLI.
 
 Usage (module CLI):
-    python -m src.utils.aruco_helpers --dict 4X4_50 --ids 0 1 2 3 --size 200 --out markers
+    python -m src.utils.aruco_helpers --dict 4X4_50 --ids 0 1 2 3 --size 200 --border 20 --out markers
 """
 from __future__ import annotations
 
@@ -18,8 +18,6 @@ import numpy as np
 
 # ---- Dictionary helpers -----------------------------------------------------
 
-
-# Map short names to OpenCV constants. Accepts aliases like "4X4_50" or "DICT_4X4_50".
 DICT_ALIASES = {
     "4X4_50": cv2.aruco.DICT_4X4_50,
     "4X4_100": cv2.aruco.DICT_4X4_100,
@@ -45,10 +43,6 @@ DICT_ALIASES = {
 
 
 def get_dictionary(name: str) -> "cv2.aruco_Dictionary":
-    """
-    Return a predefined ArUco/AprilTag dictionary by name.
-    Accepts "4X4_50" or "DICT_4X4_50" etc. Case-insensitive.
-    """
     key = name.upper().replace("DICT_", "")
     if key not in DICT_ALIASES:
         valid = ", ".join(sorted(DICT_ALIASES.keys()))
@@ -60,32 +54,22 @@ def get_dictionary(name: str) -> "cv2.aruco_Dictionary":
 
 
 def create_detector_params() -> "cv2.aruco_DetectorParameters":
-    """
-    Create DetectorParameters with sensible defaults for paper markers.
-    Tuned conservatively; you can tweak as needed later.
-    """
     params = cv2.aruco.DetectorParameters()
-
-    # Adaptive thresholding window (helps with uneven lighting)
     params.adaptiveThreshWinSizeMin = 3
     params.adaptiveThreshWinSizeMax = 23
     params.adaptiveThreshWinSizeStep = 10
     params.adaptiveThreshConstant = 7
 
-    # Marker border/contour filtering
     params.minMarkerPerimeterRate = 0.02
     params.maxMarkerPerimeterRate = 4.0
     params.polygonalApproxAccuracyRate = 0.03
 
-    # Corner refinement for better pose stability
     params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
     params.cornerRefinementWinSize = 5
     params.cornerRefinementMaxIterations = 50
     params.cornerRefinementMinAccuracy = 0.01
 
-    # Minimum distance between detected markers (as fraction of min side)
     params.minDistanceToBorder = 3
-
     return params
 
 
@@ -93,21 +77,17 @@ def create_detector_params() -> "cv2.aruco_DetectorParameters":
 
 
 def _draw_marker_image(dictionary: "cv2.aruco_Dictionary", marker_id: int, size_px: int) -> np.ndarray:
-    """
-    Generate a single marker image. Uses generateImageMarker if available, else drawMarker.
-    """
     if hasattr(cv2.aruco, "generateImageMarker"):
         img = cv2.aruco.generateImageMarker(dictionary, marker_id, size_px)
     else:
-        # Older fallback
         img = np.zeros((size_px, size_px), dtype=np.uint8)
         cv2.aruco.drawMarker(dictionary, marker_id, size_px, img, 1)
     return img
 
 
-def print_markers(dict_name: str, ids: Iterable[int], size_px: int, out_dir: Path) -> List[Path]:
+def print_markers(dict_name: str, ids: Iterable[int], size_px: int, out_dir: Path, border_px: int = 20) -> List[Path]:
     """
-    Save each requested marker ID as a PNG in out_dir.
+    Save each requested marker ID as a PNG in out_dir, with a white border (quiet zone).
     Returns list of saved file paths.
     """
     dictionary = get_dictionary(dict_name)
@@ -115,12 +95,18 @@ def print_markers(dict_name: str, ids: Iterable[int], size_px: int, out_dir: Pat
     saved: List[Path] = []
 
     for mid in ids:
-        img = _draw_marker_image(dictionary, int(mid), int(size_px))
-        # Convert to 3-channel for better PNG handling in some viewers; add a white border.
+        core = _draw_marker_image(dictionary, int(mid), int(size_px))  # grayscale 0/255
+        # Add a white quiet zone around the marker
+        img = cv2.copyMakeBorder(
+            core,
+            border_px,
+            border_px,
+            border_px,
+            border_px,
+            borderType=cv2.BORDER_CONSTANT,
+            value=255,  # white margin
+        )
         img_bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-        border = 0  # change if you want a white border (e.g., 10)
-        if border > 0:
-            img_bgr = cv2.copyMakeBorder(img_bgr, border, border, border, border, cv2.BORDER_CONSTANT, value=(255, 255, 255))
         out_path = out_dir / f"marker_{mid}.png"
         if not cv2.imwrite(str(out_path), img_bgr):
             raise RuntimeError(f"Failed to write {out_path}")
@@ -137,7 +123,8 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ArUco marker printer CLI")
     p.add_argument("--dict", default="4X4_50", help="Dictionary name (e.g., 4X4_50, 5X5_100, APRILTAG_36h11)")
     p.add_argument("--ids", type=int, nargs="+", required=True, help="Marker IDs to generate (e.g., 0 1 2 3)")
-    p.add_argument("--size", type=int, default=200, help="Marker size in pixels (default: 200)")
+    p.add_argument("--size", type=int, default=200, help="Marker size in pixels (marker square only, not counting border)")
+    p.add_argument("--border", type=int, default=20, help="White border (quiet zone) in pixels (default: 20)")
     p.add_argument("--out", type=Path, default=Path("markers"), help="Output directory (default: markers)")
     return p.parse_args(argv)
 
@@ -145,7 +132,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
 def main(argv: List[str] | None = None) -> int:
     ns = _parse_args(argv or sys.argv[1:])
     try:
-        print_markers(ns.__dict__["dict"], ns.ids, ns.size, ns.out)
+        print_markers(ns.__dict__["dict"], ns.ids, ns.size, ns.out, border_px=int(ns.border))
         return 0
     except Exception as e:
         print(f"Error: {e}")
