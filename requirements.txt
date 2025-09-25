@@ -1,0 +1,4 @@
+opencv-contrib-python==4.10.0.84
+numpy==1.26.4
+ruff==0.6.8
+pytest==8.3.3

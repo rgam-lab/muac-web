@@ -1,0 +1,10 @@
+[project]
+name = "aruco-toolkit"
+version = "0.1.0"
+description = "Minimal Python toolkit for ArUco marker detection and visualization"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F"]
+ignore = []
