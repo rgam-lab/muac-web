@@ -1,0 +1,13 @@
+# Prevent sending venvs, build outputs, OS junk into the image context
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+.DS_Store
+.git
+.gitignore
+out/
+markers/
+.ruff_cache
+.pytest_cache

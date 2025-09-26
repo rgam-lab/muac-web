@@ -6,7 +6,7 @@ RUFF := $(VENV)/bin/ruff
 HOSTNAME := nominally-fleet-camel.ngrok-free.app
 PORT := 80
 
-.PHONY: venv fmt lint check-env run-webcam run-webapp host test
+.PHONY: venv fmt lint check-env run-webcam run-webapp host test conda-create conda-activate docker-build docker-shell docker-check-env docker-webapp
 
 venv:
 	python3 -m venv $(VENV)
@@ -34,3 +34,26 @@ host:
 
 test:
 	$(PY) -m pytest
+
+conda-create:
+	conda env create -f environment.yml
+
+# Activation can't happen inside Make; run this in your shell:
+# conda activate aruco-env
+conda-activate:
+	@echo "Run 'conda activate aruco-env' in your shell."
+	conda init --all
+	conda activate aruco-env
+
+docker-build:
+	docker build -t aruco-demo:latest .
+
+docker-shell:
+	docker run --rm -it -p 5000:5000 -v $$PWD:/app aruco-demo:latest /bin/bash
+
+docker-check-env:
+	docker run --rm -it -v $$PWD:/app aruco-demo:latest python scripts/check_env.py
+
+docker-webapp:
+	docker run --rm -it -p 5000:5000 -v $$PWD:/app aruco-demo:latest \
+		python -m flask --app src/webapp/app.py run --host 0.0.0.0
