@@ -3,6 +3,8 @@ VENV := .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 RUFF := $(VENV)/bin/ruff
+HOSTNAME := nominally-fleet-camel.ngrok-free.app
+PORT := 80
 
 .PHONY: venv fmt lint check-env run-webcam run-webapp
 
@@ -25,4 +27,7 @@ run-webcam:
 	$(PY) src/aruco_demo_webcam.py --dict 4X4_50
 
 run-webapp:
-	FLASK_APP=src/webapp/app.py $(PY) -m flask run
+	FLASK_APP=src/webapp/app.py $(PY) -m flask run --host 0.0.0.0 -p $(PORT)
+
+host:
+	http --hostname=$(HOSTNAME) $(PORT)

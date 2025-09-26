@@ -6,13 +6,18 @@ Intended as a clean, reproducible starting point for robotics, AR, and computer 
 ## Quickstart
 
 ```bash
-python3 -m venv .venv
+make venv
 source .venv/bin/activate
-python -V
-pip install --upgrade pip
-pip install -r requirements.txt
-# Then run the environment check (will be added in the next step):
-python scripts/check_env.py
+
+make check-env
+
+# Run the webcam script locally
+make run-webcam
+# or host the webapp
+make run-webapp
+
+# To public host
+make host
 ```
 
 ## Features (planned)
