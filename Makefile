@@ -6,7 +6,7 @@ RUFF := $(VENV)/bin/ruff
 HOSTNAME := nominally-fleet-camel.ngrok-free.app
 PORT := 80
 
-.PHONY: venv fmt lint check-env run-webcam run-webapp host test conda-create conda-activate docker-build docker-shell docker-check-env docker-webapp
+.PHONY: venv fmt lint check-env run-webcam run-webapp host test conda-create conda-activate dc-up dc-down dc-logs dc-rebuild
 
 venv:
 	python3 -m venv $(VENV)
@@ -43,15 +43,14 @@ conda-create:
 conda-activate:
 	@echo "Run 'conda activate aruco-env' in your shell."
 
-docker-build:
-	docker build -t aruco-demo:latest .
+dc-up:
+	docker compose up -d
 
-docker-shell:
-	docker run --rm -it -p 80:80 -v $$PWD:/app aruco-demo:latest /bin/bash
+dc-down:
+	docker compose down
 
-docker-check-env:
-	docker run --rm -it -v $$PWD:/app aruco-demo:latest python scripts/check_env.py
+dc-logs:
+	docker compose logs -f
 
-docker-webapp:
-	docker run --rm -it -p 80:80 -v $$PWD:/app aruco-demo:latest \
-		python -m flask --app src/webapp/app.py run --host 0.0.0.0 -p 80
+dc-rebuild:
+	docker compose build --no-cache

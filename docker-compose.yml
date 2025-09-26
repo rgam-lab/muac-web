@@ -1,0 +1,22 @@
+services:
+  web:
+    build: .
+    image: aruco-demo:latest
+    command: python -m flask --app src/webapp/app.py run --host 0.0.0.0 --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  ngrok:
+    image: ngrok/ngrok:alpine
+    depends_on:
+      - web
+    # Use a fixed custom domain (ngrok reserved domain) or fall back to random URL if NGROK_DOMAIN unset
+    command: >
+      http --domain=${NGROK_DOMAIN:-} web:5000
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    # No ports needed; ngrok serves via its own cloud URL
