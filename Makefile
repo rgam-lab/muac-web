@@ -6,7 +6,7 @@ RUFF := $(VENV)/bin/ruff
 HOSTNAME := nominally-fleet-camel.ngrok-free.app
 PORT := 80
 
-.PHONY: venv fmt lint check-env run-webcam run-webapp
+.PHONY: venv fmt lint check-env run-webcam run-webapp host test
 
 venv:
 	python3 -m venv $(VENV)
@@ -31,3 +31,6 @@ run-webapp:
 
 host:
 	http --hostname=$(HOSTNAME) $(PORT)
+
+test:
+	$(PY) -m pytest
