@@ -8,8 +8,9 @@
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 1rem; }
     .row { display: flex; gap: 1rem; flex-wrap: wrap; }
     video, canvas, img { max-width: 100%; height: auto; border: 1px solid #ccc; }
-    .controls { margin: 0.5rem 0; display: flex; gap: 0.5rem; align-items: center; }
+    .controls { margin: 0.5rem 0; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
     label { font-size: 0.9rem; }
+    .warn { color: #b35; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -31,6 +32,10 @@
     <span id="status"></span>
   </div>
 
+  <p class="warn" id="httpsHint" style="display:none;">
+    Tip: On mobile, camera only works over HTTPS (or localhost). Use a tunnel (ngrok/Cloudflare) or run with a trusted cert.
+  </p>
+
   <div class="row">
     <video id="video" autoplay playsinline muted width="480" height="360"></video>
     <canvas id="canvas" width="480" height="360" style="display:none;"></canvas>
@@ -45,13 +50,33 @@
     const stopBtn = document.getElementById('stopBtn');
     const dictSel = document.getElementById('dict');
     const statusEl = document.getElementById('status');
+    const httpsHint = document.getElementById('httpsHint');
+
+    // Show HTTPS hint if not secure and not localhost.
+    const isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (!isSecure) httpsHint.style.display = 'block';
+
+    // Promise-based fallback for older Safari (webkitGetUserMedia)
+    function getUserMediaCompat(constraints) {
+      const nav = navigator;
+      if (nav.mediaDevices && typeof nav.mediaDevices.getUserMedia === 'function') {
+        return nav.mediaDevices.getUserMedia(constraints);
+      }
+      const legacy = nav.getUserMedia || nav.webkitGetUserMedia || nav.mozGetUserMedia;
+      if (legacy) {
+        return new Promise((resolve, reject) => legacy.call(nav, constraints, resolve, reject));
+      }
+      return Promise.reject(new Error('getUserMedia is not available on this browser. Use HTTPS and a modern browser.'));
+    }
+
     let stream = null;
     let rafId = null;
     let running = false;
 
     async function start() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+        // Use ideal constraint so browser can choose if environment camera isn’t available
+        stream = await getUserMediaCompat({ video: { facingMode: { ideal: 'environment' } }, audio: false });
         video.srcObject = stream;
         running = true;
         startBtn.disabled = true;
@@ -59,6 +84,7 @@
         statusEl.textContent = 'Running…';
         loop();
       } catch (e) {
+        statusEl.textContent = '';
         alert('Camera error: ' + e);
       }
     }
@@ -79,10 +105,7 @@
       const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
       const dict = dictSel.value;
       try {
-        const resp = await fetch(`/detect?dict=${encodeURIComponent(dict)}`, {
-          method: 'POST',
-          body: blob
-        });
+        const resp = await fetch(`/detect?dict=${encodeURIComponent(dict)}`, { method: 'POST', body: blob });
         if (resp.ok) {
           const buf = await resp.arrayBuffer();
           annotated.src = URL.createObjectURL(new Blob([buf], { type: 'image/png' }));
