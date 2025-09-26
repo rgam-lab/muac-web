@@ -4,7 +4,7 @@ PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 RUFF := $(VENV)/bin/ruff
 
-.PHONY: venv fmt lint check-env
+.PHONY: venv fmt lint check-env run-webcam run-webapp
 
 venv:
 	python3 -m venv $(VENV)
@@ -20,3 +20,9 @@ lint:
 
 check-env:
 	$(PY) scripts/check_env.py
+
+run-webcam:
+	$(PY) src/aruco_demo_webcam.py --dict 4X4_50
+
+run-webapp:
+	FLASK_APP=src/webapp/app.py $(PY) -m flask run

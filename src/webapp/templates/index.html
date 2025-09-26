@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ArUco Web Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 1rem; }
+    .row { display: flex; gap: 1rem; flex-wrap: wrap; }
+    video, canvas, img { max-width: 100%; height: auto; border: 1px solid #ccc; }
+    .controls { margin: 0.5rem 0; display: flex; gap: 0.5rem; align-items: center; }
+    label { font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>ArUco Web Demo</h1>
+  <p>Live camera in browser → send frames to server → get annotated result.</p>
+
+  <div class="controls">
+    <label>Dictionary:
+      <select id="dict">
+        <option>4X4_50</option>
+        <option>5X5_100</option>
+        <option>6X6_250</option>
+        <option>7X7_1000</option>
+        <option>APRILTAG_36h11</option>
+      </select>
+    </label>
+    <button id="startBtn">Start</button>
+    <button id="stopBtn" disabled>Stop</button>
+    <span id="status"></span>
+  </div>
+
+  <div class="row">
+    <video id="video" autoplay playsinline muted width="480" height="360"></video>
+    <canvas id="canvas" width="480" height="360" style="display:none;"></canvas>
+    <img id="annotated" alt="Annotated frame will appear here" />
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const annotated = document.getElementById('annotated');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const dictSel = document.getElementById('dict');
+    const statusEl = document.getElementById('status');
+    let stream = null;
+    let rafId = null;
+    let running = false;
+
+    async function start() {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+        video.srcObject = stream;
+        running = true;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusEl.textContent = 'Running…';
+        loop();
+      } catch (e) {
+        alert('Camera error: ' + e);
+      }
+    }
+
+    function stop() {
+      running = false;
+      cancelAnimationFrame(rafId);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      statusEl.textContent = 'Stopped';
+    }
+
+    async function loop() {
+      if (!running) return;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      const dict = dictSel.value;
+      try {
+        const resp = await fetch(`/detect?dict=${encodeURIComponent(dict)}`, {
+          method: 'POST',
+          body: blob
+        });
+        if (resp.ok) {
+          const buf = await resp.arrayBuffer();
+          annotated.src = URL.createObjectURL(new Blob([buf], { type: 'image/png' }));
+        } else {
+          statusEl.textContent = 'Server error';
+        }
+      } catch (e) {
+        statusEl.textContent = 'Network error';
+      }
+      rafId = requestAnimationFrame(loop);
+    }
+
+    startBtn.addEventListener('click', start);
+    stopBtn.addEventListener('click', stop);
+  </script>
+</body>
+</html>
