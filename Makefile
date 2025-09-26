@@ -47,11 +47,11 @@ docker-build:
 	docker build -t aruco-demo:latest .
 
 docker-shell:
-	docker run --rm -it -p 5000:5000 -v $$PWD:/app aruco-demo:latest /bin/bash
+	docker run --rm -it -p 80:80 -v $$PWD:/app aruco-demo:latest /bin/bash
 
 docker-check-env:
 	docker run --rm -it -v $$PWD:/app aruco-demo:latest python scripts/check_env.py
 
 docker-webapp:
-	docker run --rm -it -p 5000:5000 -v $$PWD:/app aruco-demo:latest \
-		python -m flask --app src/webapp/app.py run --host 0.0.0.0
+	docker run --rm -it -p 80:80 -v $$PWD:/app aruco-demo:latest \
+		python -m flask --app src/webapp/app.py run --host 0.0.0.0 -p 80
