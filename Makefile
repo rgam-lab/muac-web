@@ -42,8 +42,6 @@ conda-create:
 # conda activate aruco-env
 conda-activate:
 	@echo "Run 'conda activate aruco-env' in your shell."
-	conda init --all
-	conda activate aruco-env
 
 docker-build:
 	docker build -t aruco-demo:latest .
