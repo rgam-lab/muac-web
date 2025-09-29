@@ -144,6 +144,134 @@ def _skin_mask_rgb(img_bgr: np.ndarray) -> np.ndarray:
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
     return mask  # {0,1}
 
+def _make_band_mask(
+    frame_bgr: np.ndarray,
+    gray: np.ndarray,
+    band_rect: Tuple[int, int, int, int],
+    keep_mask_full: np.ndarray,
+    use_skin: bool,
+    contrast_pct: int,
+    sharp_pct: int,
+    gamma: float,
+    skin_debug_draw: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Build a clean binary mask of the foreground inside the band:
+      - Optional broad skin filter (YCbCr+HSV union)
+      - Contrast/sharpness boost
+      - Otsu threshold
+      - Remove board region via keep_mask_full
+      - Morphological clean-up
+    Returns a binary mask (uint8 {0,1}) in band coordinates.
+    """
+    x0, y0, x1, y1 = band_rect
+    band_gray = gray[y0:y1, x0:x1]
+    km = keep_mask_full[y0:y1, x0:x1]  # 1=keep, 0=remove (board)
+    pre_mask = np.ones_like(band_gray, dtype=np.uint8)
+
+    if use_skin:
+        band_bgr = frame_bgr[y0:y1, x0:x1]
+        sm = _skin_mask_rgb(band_bgr)  # {0,1}
+        pre_mask = sm
+        if skin_debug_draw is not None:
+            thumb = (sm * 255)
+            th = min(80, thumb.shape[0])
+            tw = min(80, thumb.shape[1])
+            thumb = cv2.resize(thumb, (tw, th), interpolation=cv2.INTER_NEAREST)
+            skin_debug_draw[4:4+th, -tw-4:-4] = cv2.cvtColor(thumb, cv2.COLOR_GRAY2BGR)
+
+    band_enh = _enhance_band(band_gray, contrast_pct, sharp_pct, gamma)
+    _, otsu = cv2.threshold(band_enh, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    combo = (otsu > 0).astype(np.uint8)
+    combo[km == 0] = 0
+    combo &= pre_mask
+
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(combo * 255, cv2.MORPH_CLOSE, k, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+    return (mask > 0).astype(np.uint8)
+
+def _auto_diameter_ellipse(
+    frame_bgr: np.ndarray,
+    gray: np.ndarray,
+    band_rect: Tuple[int, int, int, int],
+    keep_mask_full: np.ndarray,
+    orient: str,
+    use_skin: bool,
+    contrast_pct: int,
+    sharp_pct: int,
+    gamma: float,
+    min_area_frac: float = 0.003,   # reject tiny blobs
+) -> Optional[Tuple[Point, Point, float]]:
+    """
+    Robust auto via ellipse fit:
+      1) Make binary mask in band (skin optional, board masked).
+      2) Keep largest connected component; fit ellipse.
+      3) Use the MINOR axis length as the diameter (perpendicular to the long axis).
+      4) Return endpoints in image coords and diameter in pixels.
+
+    Returns (p1, p2, diameter_px) or None.
+    """
+    x0, y0, x1, y1 = band_rect
+    h_band = max(1, y1 - y0)
+    w_band = max(1, x1 - x0)
+
+    mask = _make_band_mask(
+        frame_bgr, gray, band_rect, keep_mask_full,
+        use_skin, contrast_pct, sharp_pct, gamma
+    )
+
+    if mask.sum() < 20:
+        return None
+
+    # Largest connected component
+    num_labels, labels = cv2.connectedComponents(mask, connectivity=8)
+    if num_labels <= 1:
+        return None
+    areas = [(labels == i).sum() for i in range(1, num_labels)]
+    best_idx = int(np.argmax(areas)) + 1
+    best_area = areas[best_idx - 1]
+    if best_area < min_area_frac * (h_band * w_band):
+        return None
+    comp = (labels == best_idx).astype(np.uint8) * 255
+
+    # Need enough edge samples to fit ellipse
+    cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not cnts:
+        return None
+    cnt = max(cnts, key=cv2.contourArea)
+    if len(cnt) < 20:
+        return None
+
+    # Fit ellipse
+    try:
+        (cx, cy), (ax_w, ax_h), angle_deg = cv2.fitEllipse(cnt)
+    except cv2.error:
+        return None
+
+    # Minor axis is the smaller of (ax_w, ax_h)
+    minor_len = float(min(ax_w, ax_h))
+    major_len = float(max(ax_w, ax_h))
+
+    # Angle is degrees from +x axis; build unit vectors
+    theta = np.deg2rad(angle_deg)
+    v_major = np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
+    v_minor = np.array([-np.sin(theta), np.cos(theta)], dtype=np.float64)
+
+    # Endpoints along the minor axis
+    p1_band = np.array([cx, cy], dtype=np.float64) - 0.5 * minor_len * v_minor
+    p2_band = np.array([cx, cy], dtype=np.float64) + 0.5 * minor_len * v_minor
+
+    # Convert band → image coordinates
+    p1 = (int(round(x0 + p1_band[0])), int(round(y0 + p1_band[1])))
+    p2 = (int(round(x0 + p2_band[0])), int(round(y0 + p2_band[1])))
+
+    # Optional sanity: keep endpoints inside the band rect
+    if not (x0 <= p1[0] < x1 and y0 <= p1[1] < y1 and x0 <= p2[0] < x1 and y0 <= p2[1] < y1):
+        return None
+
+    return p1, p2, minor_len
+
 
 def _auto_diameter_binary(
     gray: np.ndarray,
@@ -359,10 +487,9 @@ def main() -> int:
     ap.add_argument("--auto-contrast", type=int, default=100, help="Auto band contrast boost percent (0-100)")
     ap.add_argument("--auto-sharp", type=int, default=100, help="Auto band sharpness boost percent (0-100)")
     ap.add_argument("--auto-gamma", type=float, default=1.0, help="Auto band gamma (e.g., 0.9 darker, 1.1 brighter)")
-    ap.add_argument("--auto-method", choices=["bin", "edge"], default="bin", help="Auto method: 'bin' brightness cutoff (default) or 'edge' gradient peaks")
+    ap.add_argument("--auto-method", choices=["bin", "edge", "ellipse"], default="ellipse", help="Auto method: 'ellipse' (robust), 'bin' (binary projection), or 'edge' (gradient peaks)")
     ap.add_argument("--skin", action="store_true", help="Enable broad skin prefilter in band (YCbCr+HSV union)")
     ap.add_argument("--skin-debug", action="store_true", help="Show a tiny skin mask indicator in the overlay")
-
 
     args = ap.parse_args()
 
@@ -454,21 +581,56 @@ def main() -> int:
             # Auto detection in band
             auto_result = None
             if auto_on:
-                if args.auto_method == "bin":
-                    # Optional debug canvas (copy of vis) to draw skin thumb
-                    skin_dbg = vis if args.skin_debug else None
+                skin_dbg = vis if args.skin_debug else None
+
+                if args.auto_method == "ellipse":
+                    auto_result = _auto_diameter_ellipse(
+                        frame, gray, band_rect, keep_mask,
+                        band_orient, args.skin,
+                        args.auto_contrast, args.auto_sharp, args.auto_gamma
+                    )
+                    if auto_result is None:
+                        # fallback to binary projection
+                        auto_result = _auto_diameter_binary(
+                            gray, band_rect, keep_mask, band_orient,
+                            args.auto_contrast, args.auto_sharp, args.auto_gamma,
+                            full_bgr=frame, use_skin=args.skin, skin_debug_draw=skin_dbg
+                        )
+                        if auto_result is None:
+                            # final fallback to edge
+                            auto_result = _auto_diameter_px(gray, band_rect, keep_mask, band_orient)
+
+                elif args.auto_method == "bin":
                     auto_result = _auto_diameter_binary(
                         gray, band_rect, keep_mask, band_orient,
                         args.auto_contrast, args.auto_sharp, args.auto_gamma,
                         full_bgr=frame, use_skin=args.skin, skin_debug_draw=skin_dbg
                     )
                     if auto_result is None:
-                        # graceful fallback to edge method if binary+skin fails
+                        auto_result = _auto_diameter_ellipse(
+                            frame, gray, band_rect, keep_mask,
+                            band_orient, args.skin,
+                            args.auto_contrast, args.auto_sharp, args.auto_gamma
+                        )
+                    if auto_result is None:
                         auto_result = _auto_diameter_px(gray, band_rect, keep_mask, band_orient)
-                else:
-                    auto_result = _auto_diameter_px(gray, band_rect, keep_mask, band_orient)
 
-                # Draw if we got a result (for either method)
+                else:  # edge
+                    auto_result = _auto_diameter_px(gray, band_rect, keep_mask, band_orient)
+                    if auto_result is None:
+                        auto_result = _auto_diameter_ellipse(
+                            frame, gray, band_rect, keep_mask,
+                            band_orient, args.skin,
+                            args.auto_contrast, args.auto_sharp, args.auto_gamma
+                        )
+                    if auto_result is None:
+                        auto_result = _auto_diameter_binary(
+                            gray, band_rect, keep_mask, band_orient,
+                            args.auto_contrast, args.auto_sharp, args.auto_gamma,
+                            full_bgr=frame, use_skin=args.skin, skin_debug_draw=skin_dbg
+                        )
+
+                # Draw if we got a result
                 if auto_result:
                     p1, p2, diameter_px = auto_result
                     mid = (int((p1[0] + p2[0]) * 0.5), int((p1[1] + p2[1]) * 0.5))
@@ -478,6 +640,7 @@ def main() -> int:
                         circ_mm = np.pi * mm
                         cv2.line(vis, p1, p2, (0, 180, 255), 2)
                         _put_text(vis, f"[auto] D={mm:.1f} mm  C={circ_mm:.1f} mm", (8, vis.shape[0]-32), (0, 180, 255))
+
 
 
             # Click fallback (uses local scale at midpoint if Hinv available)
