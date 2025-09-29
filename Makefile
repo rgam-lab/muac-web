@@ -6,7 +6,7 @@ RUFF := $(VENV)/bin/ruff
 HOSTNAME := nominally-fleet-camel.ngrok-free.app
 PORT := 80
 
-.PHONY: venv fmt lint check-env run-webcam run-webapp host test conda-create conda-activate dc-up dc-down dc-logs dc-rebuild
+.PHONY: venv fmt lint check-env run-webcam run-webapp host test conda-create conda-activate dc-up dc-down dc-logs dc-rebuild print-charuco run-charuco-image
 
 venv:
 	python3 -m venv $(VENV)
@@ -54,3 +54,14 @@ dc-logs:
 
 dc-rebuild:
 	docker compose build --no-cache
+
+# Generate a ChArUco PNG with default 5x7, 20 mm squares, 14 mm markers
+print-charuco:
+	$(PY) -c "from pathlib import Path; from src.utils.charuco_helpers import CharucoConfig, save_board_png; \
+cfg=CharucoConfig(squares_x=5,squares_y=7,square_length_m=0.02,marker_length_m=0.014,dict_name='4X4_50'); \
+save_board_png(cfg, Path('markers/charuco_5x7.png'))" && ls -lah markers/charuco_5x7.png
+
+# Detect ChArUco in an image and estimate metric scale
+CHARUCO_IMAGE ?= markers/charuco_5x7.png
+run-charuco-image:
+	$(PY) src/charuco_demo_image.py --image $(CHARUCO_IMAGE) --squares-x 5 --squares-y 7 --square-m 0.02 --marker-m 0.014 --dict 4X4_50 --out out/charuco_annot.png

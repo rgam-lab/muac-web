@@ -11,3 +11,4 @@ out/
 markers/
 .ruff_cache
 .pytest_cache
+tests/
