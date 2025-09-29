@@ -74,7 +74,7 @@ save_board_pdf(cfg, Path('markers/charuco_5x7_letter.pdf'))" && ls -lah markers/
 # Detect ChArUco in an image and estimate metric scale
 CHARUCO_IMAGE ?= markers/charuco_5x7.png
 run-charuco-image:
-	$(PY) src/charuco_demo_image.py --image $(CHARUCO_IMAGE) --squares-x 5 --squares-y 7 --square-m 0.02 --marker-m 0.014 --dict 4X4_50 --out out/charuco_annot.png
+	$(PY) src/charuco_demo_image.py --image $(CHARUCO_IMAGE) --squares-x 5 --squares-y 7 --square-m 0.04 --marker-m 0.028 --dict 4X4_50 --out out/charuco_annot.png
 
 run-charuco-webcam:
-	$(PY) src/charuco_demo_webcam.py --dict 4X4_50 --squares-x 5 --squares-y 7 --square-m 0.02 --marker-m 0.014
+	$(PY) src/charuco_demo_webcam.py --dict 4X4_50 --squares-x 5 --squares-y 7 --square-m 0.04 --marker-m 0.028
