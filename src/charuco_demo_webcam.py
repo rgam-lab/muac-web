@@ -15,9 +15,10 @@ from utils.charuco_helpers import (
     CharucoConfig,
     detect_charuco,
     draw_charuco,
-    estimate_scale_m_per_px_from_charuco,  # keep as fallback
+    estimate_scale_m_per_px_from_charuco,  # fallback
     estimate_homography_from_charuco,
     local_scale_m_per_px,
+    project_board_polygon_px,  # NEW
 )
 
 Point = Tuple[int, int]
@@ -30,7 +31,7 @@ def _put_text(img, text, org, color=(255, 255, 255), scale=0.6, thickness=1):
 def _draw_measurement_overlay(frame: np.ndarray, p1: Optional[Point], p2: Optional[Point], m_per_px: Optional[float]) -> None:
     h, w = frame.shape[:2]
     cv2.rectangle(frame, (0, 0), (w, 28), (0, 0, 0), -1)
-    _put_text(frame, "Click two points across the arm | 'c' clear | 's' save | 'q' quit | 'a' toggle auto", (8, 20))
+    _put_text(frame, "Click 2 points across arm | 'c' clear | 's' save | 'q' quit | 'a' auto | ↑/↓ move band", (8, 20))
     if p1:
         cv2.circle(frame, p1, 5, (0, 255, 255), -1)
     if p2:
@@ -46,60 +47,99 @@ def _draw_measurement_overlay(frame: np.ndarray, p1: Optional[Point], p2: Option
             _put_text(frame, f"D = {px_dist:.1f} px (no metric scale)", (8, h - 12), (0, 255, 255))
 
 
-# ---- NEW: auto arm-band ROI helper -----------------------------------------
+# ====== NEW: guide band + board-masked auto diameter ======
 
-def _auto_band_diameter_px(gray: np.ndarray) -> Optional[Tuple[Point, Point, float]]:
+def _rect_from_center_band(h: int, w: int, cy: int, band_h: int) -> Tuple[int, int, int, int]:
+    """Return (x0,y0,x1,y1) of a horizontal band centered at y=cy with height band_h."""
+    y0 = max(0, cy - band_h // 2)
+    y1 = min(h, y0 + band_h)
+    return 0, y0, w, y1
+
+
+def _mask_out_board(h: int, w: int, board_poly: Optional[np.ndarray]) -> np.ndarray:
+    """Return uint8 mask (1=keep) that zeros out the board polygon region (and a small dilation)."""
+    keep = np.ones((h, w), dtype=np.uint8)
+    if board_poly is None:
+        return keep
+    board_mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(board_mask, [board_poly.astype(np.int32)], 1)
+    board_mask = cv2.dilate(board_mask, np.ones((7, 7), np.uint8), iterations=1)  # pad a bit around the board
+    keep[board_mask == 1] = 0
+    return keep
+
+
+def _auto_band_diameter_px(gray: np.ndarray, band_rect: Tuple[int, int, int, int], keep_mask: np.ndarray) -> Optional[Tuple[Point, Point, float]]:
     """
-    Simple automatic diameter finder in a narrow horizontal stripe around the mid-height.
-    Steps:
-      - Use Sobel X gradients collapsed across a band to form a 1D profile along columns.
-      - Find two strongest opposing edges with reasonable separation.
-    Returns (p1, p2, diameter_px) or None if not reliable.
+    Robust-ish automatic diameter finder restricted to a horizontal band and excluding board area.
+    Pipeline:
+      - Crop band, apply keep_mask.
+      - Canny edges + horizontal closing to connect boundaries.
+      - Column-wise edge density profile -> two peaks with min separation and balance.
+    Returns (p1, p2, diameter_px).
     """
     h, w = gray.shape[:2]
-    band_h = max(6, h // 20)            # ~5% of image height
-    y0 = h // 2 - band_h // 2
-    roi = gray[y0:y0 + band_h, :]
-
-    # Smooth then gradient along X
-    roi_blur = cv2.GaussianBlur(roi, (5, 5), 0)
-    gx = cv2.Sobel(roi_blur, cv2.CV_32F, 1, 0, ksize=3)
-    mag = np.abs(gx)
-
-    # Collapse to 1D column response
-    profile = mag.mean(axis=0)  # (w,)
-
-    # Normalize & find peaks
-    prof = profile.copy()
-    if prof.max() <= 1e-6:
+    x0, y0, x1, y1 = band_rect
+    band = gray[y0:y1, x0:x1]
+    if band.size == 0:
         return None
-    prof /= prof.max()
 
-    # Basic peak picking: top two peaks with min separation
-    min_sep = max(20, w // 15)  # pixels
+    km = keep_mask[y0:y1, x0:x1]
+    # Blur & Canny
+    blur = cv2.GaussianBlur(band, (5, 5), 0)
+    edges = cv2.Canny(blur, 40, 120)
+    edges[km == 0] = 0  # remove board edges
+
+    # Morph close to strengthen vertical boundaries
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    # Column density
+    profile = edges.mean(axis=0)  # (w,)
+    if profile.max() < 5:  # weak signal
+        return None
+
+    prof = profile.astype(np.float32)
+    prof /= (prof.max() + 1e-6)
+
+    # find two best-separated peaks
+    min_sep = max(24, (x1 - x0) // 12)
     idx_sorted = np.argsort(prof)[::-1]
     peaks: List[int] = []
     for idx in idx_sorted:
-        if all(abs(idx - p) >= min_sep for p in peaks):
+        if all(abs(int(idx) - p) >= min_sep for p in peaks):
             peaks.append(int(idx))
         if len(peaks) >= 2:
             break
     if len(peaks) < 2:
         return None
     peaks.sort()
-    x1, x2 = peaks[0], peaks[1]
-    diameter_px = float(abs(x2 - x1))
-    p1 = (x1, y0 + band_h // 2)
-    p2 = (x2, y0 + band_h // 2)
+    xL, xR = peaks[0], peaks[1]
 
-    # Heuristic sanity: reject silly widths (too small/too big)
-    if diameter_px < w * 0.05 or diameter_px > w * 0.9:
+    # sanity checks: balanced strengths and reasonable width
+    strength_balance = min(prof[xL], prof[xR]) / (max(prof[xL], prof[xR]) + 1e-6)
+    width = xR - xL
+    if strength_balance < 0.4:
         return None
-    return p1, p2, diameter_px
+    if width < (x1 - x0) * 0.06 or width > (x1 - x0) * 0.9:
+        return None
+
+    yC = (y0 + y1) // 2
+    p1 = (x0 + xL, yC)
+    p2 = (x0 + xR, yC)
+    return p1, p2, float(width)
+
+
+def _draw_guide_band(vis: np.ndarray, band_rect: Tuple[int, int, int, int]) -> None:
+    x0, y0, x1, y1 = band_rect
+    overlay = vis.copy()
+    cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 200, 255), 2)
+    alpha = 0.12
+    cv2.addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis)
+    _put_text(vis, "Align upper arm in the highlighted band", (x0 + 8, max(16, y0 - 6)), (0, 200, 255))
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="ChArUco webcam demo with pose-aware scale and auto arm band")
+    ap = argparse.ArgumentParser(description="ChArUco webcam demo with pose-aware scale, guide band, and auto arm detection")
     ap.add_argument("--camera-index", type=int, default=0)
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
@@ -111,8 +151,10 @@ def main() -> int:
     ap.add_argument("--marker-m", type=float, default=0.014, help="Marker size (m)")
     ap.add_argument("--no-gui", action="store_true")
     ap.add_argument("--save-dir", type=Path, default=None)
-    ap.add_argument("--scale-window", type=int, default=15, help="Frames in running median for global scale smoothing")
+    ap.add_argument("--scale-window", type=int, default=15)
     ap.add_argument("--auto", action="store_true", help="Start with auto band detection enabled")
+    ap.add_argument("--band-h", type=int, default=64, help="Guide band height in pixels")
+    ap.add_argument("--band-y", type=int, default=-1, help="Guide band center y (default: mid-height)")
     args = ap.parse_args()
 
     if args.save_dir:
@@ -132,11 +174,16 @@ def main() -> int:
     click_pts: List[Point] = []
     auto_on = bool(args.auto)
 
-    # Global scale fallback smoothing (from old method)
     global_scale_hist: deque[float] = deque(maxlen=max(3, int(args.scale_window)))
 
+    H: Optional[np.ndarray] = None
     Hinv: Optional[np.ndarray] = None
     H_used = 0
+
+    # guide band state
+    h0, w0 = args.height, args.width
+    band_cy = args.band_y if args.band_y >= 0 else h0 // 2
+    band_h = max(24, int(args.band_h))
 
     def on_mouse(event, x, y, flags, userdata):
         nonlocal click_pts
@@ -158,77 +205,68 @@ def main() -> int:
                 print("Frame grab failed; exiting.")
                 break
 
+            h, w = frame.shape[:2]
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             det = detect_charuco(gray, cfg)
 
-            # Try homography (pose-aware local scale)
-            H, Hinv_new, n_used = estimate_homography_from_charuco(det, cfg)
-            if Hinv_new is not None:
-                Hinv = Hinv_new
-                H_used = n_used
+            # Pose-aware H + inverse
+            H_new, Hinv_new, n_used = estimate_homography_from_charuco(det, cfg)
+            if H_new is not None and Hinv_new is not None:
+                H, Hinv, H_used = H_new, Hinv_new, n_used
 
-            # Compute a global fallback scale for display if Hinv missing
+            # Fallback global scale
             gscale = estimate_scale_m_per_px_from_charuco(det, cfg)
             if gscale and np.isfinite(gscale) and gscale > 0:
                 global_scale_hist.append(float(gscale))
             gscale_smoothed = float(np.median(global_scale_hist)) if len(global_scale_hist) >= 3 else (gscale if gscale else None)
 
-            # Visualization
+            # Board mask (exclude region)
+            board_poly = project_board_polygon_px(H, cfg)
+            keep_mask = _mask_out_board(h, w, board_poly)
+
+            # Visualization base
             vis = draw_charuco(frame, det)
 
-            # Status bars
+            # Status text
             cv2.rectangle(vis, (0, 0), (vis.shape[1], 50), (0, 0, 0), -1)
             if Hinv is not None:
-                _put_text(vis, f"pose-aware scale ✓  (pts={H_used})", (8, 20), (0, 255, 0))
+                _put_text(vis, f"pose-aware scale ✓ (pts={H_used})", (8, 20), (0, 255, 0))
             else:
-                _put_text(vis, "pose-aware scale ×  (need more ChArUco)", (8, 20), (0, 255, 255))
+                _put_text(vis, "pose-aware scale × (need more ChArUco)", (8, 20), (0, 255, 255))
             if gscale_smoothed:
-                _put_text(vis, f"global scale ~ {gscale_smoothed*1000:.3f} mm/px", (8, 40), (200, 200, 255))
+                _put_text(vis, f"global ~ {gscale_smoothed*1000:.3f} mm/px", (8, 40), (200, 200, 255))
 
-            # ----- Auto band (optional) -----
+            # Guide band
+            band_rect = _rect_from_center_band(h, w, band_cy, band_h)
+            _draw_guide_band(vis, band_rect)
+
+            # Auto detection inside band (board masked)
             auto_result = None
             if auto_on:
-                auto_result = _auto_band_diameter_px(gray)
+                auto_result = _auto_band_diameter_px(gray, band_rect, keep_mask)
                 if auto_result:
                     p1, p2, diameter_px = auto_result
-                    # local scale at midpoint (pose-aware if Hinv, else fallback)
                     mid = (int((p1[0] + p2[0]) * 0.5), int((p1[1] + p2[1]) * 0.5))
-                    if Hinv is not None:
-                        mpp = local_scale_m_per_px(Hinv, mid[0], mid[1])
-                    else:
-                        mpp = gscale_smoothed
+                    mpp = local_scale_m_per_px(Hinv, mid[0], mid[1]) if Hinv is not None else gscale_smoothed
                     if mpp:
                         mm = diameter_px * mpp * 1000.0
                         circ_mm = np.pi * mm
                         cv2.line(vis, p1, p2, (0, 180, 255), 2)
                         _put_text(vis, f"[auto] D={mm:.1f} mm  C={circ_mm:.1f} mm", (8, vis.shape[0]-32), (0, 180, 255))
 
-            # ----- Click measurement (always available) -----
+            # Click measurement (always available)
             p1 = click_pts[0] if len(click_pts) >= 1 else None
             p2 = click_pts[1] if len(click_pts) >= 2 else None
-            # Prefer local pose-aware scale at the segment midpoint; fallback to global
             seg_mpp: Optional[float] = None
             if p1 and p2:
                 mid = (int((p1[0] + p2[0]) * 0.5), int((p1[1] + p2[1]) * 0.5))
-                if Hinv is not None:
-                    seg_mpp = local_scale_m_per_px(Hinv, mid[0], mid[1])
-                else:
-                    seg_mpp = gscale_smoothed
-
+                seg_mpp = local_scale_m_per_px(Hinv, mid[0], mid[1]) if Hinv is not None else gscale_smoothed
             _draw_measurement_overlay(vis, p1, p2, seg_mpp)
 
-            # GUI / headless flows
+            # GUI / headless
             if args.no_gui:
                 if i % args.fps == 0:
-                    msg = f"[{time.strftime('%H:%M:%S')}] "
-                    msg += f"Hinv={'Y' if Hinv is not None else 'N'} "
-                    if auto_result and (Hinv is not None or gscale_smoothed):
-                        msg += "auto=OK "
-                    if p1 and p2 and seg_mpp:
-                        px_dist = float(np.linalg.norm(np.array(p1, float) - np.array(p2, float)))
-                        mm = px_dist * seg_mpp * 1000.0
-                        circ_mm = np.pi * mm
-                        msg += f"| click D={mm:.1f}mm C={circ_mm:.1f}mm"
+                    msg = f"[{time.strftime('%H:%M:%S')}] Hinv={'Y' if Hinv is not None else 'N'} auto={'Y' if auto_on else 'N'}"
                     print(msg)
                 if args.save_dir and (time.time() - last_save_ts) >= 1.0:
                     out_path = args.save_dir / f"charuco_{int(time.time())}.png"
@@ -247,6 +285,10 @@ def main() -> int:
                     print(f"Saved {out_path}")
                 if key == ord('a'):
                     auto_on = not auto_on
+                if key == 82:  # Up arrow
+                    band_cy = max(band_h // 2 + 4, band_cy - 6)
+                if key == 84:  # Down arrow
+                    band_cy = min(h - band_h // 2 - 4, band_cy + 6)
 
             i += 1
 

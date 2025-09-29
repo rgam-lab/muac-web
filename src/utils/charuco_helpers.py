@@ -289,3 +289,26 @@ def local_scale_m_per_px(Hinv: np.ndarray, u: float, v: float, delta_px: float =
     sy = np.linalg.norm(py - p) / delta_px
     # Average the two local scales (m/px); you could also keep both if you prefer anisotropic handling.
     return float((sx + sy) * 0.5)
+
+
+def board_size_m(cfg: CharucoConfig) -> Tuple[float, float]:
+    """Return (width_m, height_m) of the ChArUco board in meters."""
+    return cfg.squares_x * cfg.square_length_m, cfg.squares_y * cfg.square_length_m
+
+
+def project_board_polygon_px(H: Optional[np.ndarray], cfg: CharucoConfig) -> Optional[np.ndarray]:
+    """
+    If homography H (board meters -> image px) is available, project the 4 board corners:
+    (0,0), (W,0), (W,H), (0,H). Returns (4,2) float32 array in image pixels, or None.
+    """
+    if H is None:
+        return None
+    W, Hm = board_size_m(cfg)
+    pts = np.array([[0, 0, 1],
+                    [W, 0, 1],
+                    [W, Hm, 1],
+                    [0, Hm, 1]], dtype=np.float64).T  # (3,4)
+    uvw = H @ pts  # (3,4)
+    uvw /= np.clip(uvw[2:3, :], 1e-9, None)
+    poly = uvw[:2, :].T.astype(np.float32)  # (4,2)
+    return poly
