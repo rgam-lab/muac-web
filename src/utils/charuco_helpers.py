@@ -22,7 +22,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from .aruco_helpers import get_dictionary, create_detector_params
 
-
 @dataclass
 class CharucoConfig:
     squares_x: int                 # number of chessboard squares along X
@@ -209,3 +208,84 @@ def estimate_scale_m_per_px_from_charuco(
 
     m_per_px = cfg.square_length_m / px_per_square
     return float(m_per_px)
+
+
+# --- add this helper near the other helpers ---
+
+def _get_board_chessboard_corners_xyz(board: "cv2.aruco_CharucoBoard") -> np.ndarray:
+    """
+    Returns the board chessboard corner coordinates as an (N,3) array in meters.
+    Works across OpenCV versions: tries method then attribute.
+    """
+    if hasattr(board, "getChessboardCorners"):
+        pts = board.getChessboardCorners()  # (N,3)
+    elif hasattr(board, "chessboardCorners"):
+        pts = board.chessboardCorners       # (N,3)
+    else:
+        raise AttributeError("CharucoBoard has no chessboard corner accessors on this OpenCV build.")
+    pts = np.asarray(pts, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"Unexpected chessboard corner shape: {pts.shape}")
+    return pts
+
+
+def _board_xy_for_charuco_ids(board: "cv2.aruco_CharucoBoard", charuco_ids: np.ndarray) -> np.ndarray:
+    """
+    For each ChArUco corner id, return its (X,Y) (meters) from the board model.
+    """
+    ids = charuco_ids.reshape(-1).astype(int)
+    corners_xyz = _get_board_chessboard_corners_xyz(board)  # (N,3) meters
+    if ids.max(initial=-1) >= corners_xyz.shape[0] or ids.min(initial=0) < 0:
+        raise IndexError("charuco_ids contain indices outside the board corner array.")
+    xy = corners_xyz[ids, :2]  # (N,2) meters
+    return xy
+
+
+
+def estimate_homography_from_charuco(
+    det: "CharucoDetection",
+    cfg: "CharucoConfig",
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int]:
+    """
+    Estimate H (board meters -> image pixels) and Hinv (pixels -> board meters)
+    using ChArUco correspondences. Returns (H, Hinv, n_used_points).
+    Needs >= 4 valid points.
+    """
+    if det.charuco_corners is None or det.charuco_ids is None:
+        return None, None, 0
+    if len(det.charuco_ids) < 4:
+        return None, None, int(len(det.charuco_ids))
+
+    board = create_board(cfg)
+    src_xy_m = _board_xy_for_charuco_ids(board, det.charuco_ids)  # (N,2) meters
+    dst_uv = det.charuco_corners.reshape(-1, 2).astype(np.float64)  # (N,2) pixels
+
+    H, mask = cv2.findHomography(src_xy_m, dst_uv, method=cv2.RANSAC, ransacReprojThreshold=2.0)
+    if H is None:
+        return None, None, 0
+    Hinv = np.linalg.inv(H)
+    used = int(mask.sum()) if mask is not None else len(src_xy_m)
+    return H, Hinv, used
+
+
+def local_scale_m_per_px(Hinv: np.ndarray, u: float, v: float, delta_px: float = 1.0) -> float:
+    """
+    Approximate local meters-per-pixel at image point (u,v) using inverse homography:
+    - Map (u,v) and its neighbors (u+dx,v), (u,v+dy) back to board plane (meters).
+    - Compute metric lengths per 1-pixel step; average X/Y directions.
+
+    Returns a single scalar (m/px). Robust for mild perspective.
+    """
+    def map_pt(ui, vi):
+        vec = np.array([ui, vi, 1.0], dtype=np.float64)
+        XYw = Hinv @ vec
+        XYw /= XYw[2] if XYw[2] != 0 else 1e-9
+        return XYw[0:2]
+
+    p = map_pt(u, v)
+    px = map_pt(u + delta_px, v)
+    py = map_pt(u, v + delta_px)
+    sx = np.linalg.norm(px - p) / delta_px
+    sy = np.linalg.norm(py - p) / delta_px
+    # Average the two local scales (m/px); you could also keep both if you prefer anisotropic handling.
+    return float((sx + sy) * 0.5)
