@@ -6,7 +6,9 @@ RUFF := $(VENV)/bin/ruff
 HOSTNAME := nominally-fleet-camel.ngrok-free.app
 PORT := 80
 
-.PHONY: venv fmt lint check-env run-webcam run-webapp host test conda-create conda-activate dc-up dc-down dc-logs dc-rebuild print-charuco run-charuco-image
+.PHONY: venv fmt lint check-env run-webcam run-webapp host test \ 
+	conda-create conda-activate dc-up dc-down dc-logs dc-rebuild \
+	print-charuco run-charuco-image run-charuco-webcam
 
 venv:
 	python3 -m venv $(VENV)
@@ -65,3 +67,6 @@ save_board_png(cfg, Path('markers/charuco_5x7.png'))" && ls -lah markers/charuco
 CHARUCO_IMAGE ?= markers/charuco_5x7.png
 run-charuco-image:
 	$(PY) src/charuco_demo_image.py --image $(CHARUCO_IMAGE) --squares-x 5 --squares-y 7 --square-m 0.02 --marker-m 0.014 --dict 4X4_50 --out out/charuco_annot.png
+
+run-charuco-webcam:
+	$(PY) src/charuco_demo_webcam.py --dict 4X4_50 --squares-x 5 --squares-y 7 --square-m 0.02 --marker-m 0.014
