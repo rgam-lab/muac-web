@@ -18,6 +18,8 @@ from typing import Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from reportlab.pdfgen import canvas
+from reportlab.lib.units import inch
 from .aruco_helpers import get_dictionary, create_detector_params
 
 
@@ -63,6 +65,44 @@ def save_board_png(
         raise RuntimeError(f"Failed to write {out_path}")
     return out_path
 
+def save_board_pdf(cfg: CharucoConfig, out_path: Path, dpi: int = 300) -> Path:
+    """
+    Save a ChArUco board to a PDF, sized for US Letter (8.5x11 in).
+    The board will be centered on the page at the correct physical scale.
+
+    Square/marker sizes are respected using cfg.square_length_m in meters.
+    """
+    # Render a high-res bitmap of the board
+    px_per_inch = dpi
+    page_w_px = int(8.5 * px_per_inch)
+    page_h_px = int(11 * px_per_inch)
+
+    board = create_board(cfg)
+    img = board.generateImage((page_w_px, page_h_px), marginSize=0, borderBits=1)
+
+    # Convert to RGB for reportlab
+    rgb = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+
+    # Temporary PNG file (reportlab reads images from disk)
+    tmp_path = out_path.with_suffix(".tmp.png")
+    cv2.imwrite(str(tmp_path), rgb)
+
+    # Create PDF
+    c = canvas.Canvas(str(out_path), pagesize=(8.5 * inch, 11 * inch))
+    c.drawImage(
+        str(tmp_path),
+        0,
+        0,
+        width=8.5 * inch,
+        height=11 * inch,
+        preserveAspectRatio=True,
+        anchor="c",
+    )
+    c.showPage()
+    c.save()
+
+    tmp_path.unlink(missing_ok=True)
+    return out_path
 
 @dataclass
 class CharucoDetection:
