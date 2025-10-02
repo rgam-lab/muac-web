@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 import cv2
 import numpy as np
@@ -29,9 +29,8 @@ from utils.charuco_helpers import (
     CharucoConfig,
     detect_charuco,
     draw_charuco,
-    estimate_scale_m_per_px_from_charuco,
+    estimate_scale_m_per_px_from_charuco,  # re-exported for convenience
 )
-from utils.charuco_helpers import save_board_png  # re-exported for convenience
 
 
 def _parse_point(s: str) -> Tuple[int, int]:

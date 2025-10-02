@@ -1,6 +1,6 @@
 import importlib
-import os
 from pathlib import Path
+
 
 def test_cv2_and_aruco_present():
     cv2 = importlib.import_module("cv2")

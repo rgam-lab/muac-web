@@ -15,7 +15,6 @@ from typing import Iterable, List
 import cv2
 import numpy as np
 
-
 # ---- Dictionary helpers -----------------------------------------------------
 
 DICT_ALIASES = {

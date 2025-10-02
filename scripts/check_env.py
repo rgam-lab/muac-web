@@ -5,6 +5,7 @@ Prints Python/OpenCV versions, ArUco availability, and a short build info line.
 """
 
 from __future__ import annotations
+
 import platform
 import sys
 

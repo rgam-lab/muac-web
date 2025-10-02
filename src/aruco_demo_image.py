@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from utils.aruco_helpers import get_dictionary, create_detector_params
+from utils.aruco_helpers import create_detector_params, get_dictionary
 
 
 def _load_json(path: Optional[str]) -> Optional[dict]:

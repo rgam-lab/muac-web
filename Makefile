@@ -8,7 +8,8 @@ PORT := 80
 
 .PHONY: venv fmt lint check-env run-webcam run-webapp host test \
 	conda-create conda-activate dc-up dc-down dc-logs dc-rebuild \
-	print-charuco print-charuco-pdf run-charuco-image run-charuco-webcam
+	print-charuco print-charuco-pdf run-charuco-image run-charuco-webcam \
+	tune-cam
 
 venv:
 	python3 -m venv $(VENV)
@@ -78,3 +79,6 @@ run-charuco-image:
 
 run-charuco-webcam:
 	$(PY) src/charuco_demo_webcam.py --dict 4X4_50 --squares-x 5 --squares-y 7 --square-m 0.04 --marker-m 0.028
+
+tune-cam:
+	$(PY) src/tools/cam_enhance_tuner.py --camera-index 0 --width 1280 --height 720

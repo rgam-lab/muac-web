@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import cv2
 from typing import List, Optional, Tuple
+
+import cv2
 
 
 def list_cameras(max_index: int = 10) -> List[int]:

@@ -10,14 +10,11 @@ Note:
 """
 from __future__ import annotations
 
-import io
-from typing import Tuple
-
 import cv2
 import numpy as np
-from flask import Flask, render_template, request, make_response
+from flask import Flask, make_response, render_template, request
 
-from src.utils.aruco_helpers import get_dictionary, create_detector_params
+from src.utils.aruco_helpers import create_detector_params, get_dictionary
 
 app = Flask(__name__)
 

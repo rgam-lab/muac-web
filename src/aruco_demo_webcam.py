@@ -19,8 +19,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from utils.aruco_helpers import get_dictionary, create_detector_params
-from utils.camera import open_camera, list_cameras
+from utils.aruco_helpers import create_detector_params, get_dictionary
+from utils.camera import open_camera
 
 
 def _detect(gray: np.ndarray, dict_name: str):

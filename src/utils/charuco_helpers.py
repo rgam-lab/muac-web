@@ -13,14 +13,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
-
-from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
-from .aruco_helpers import get_dictionary, create_detector_params
+from reportlab.pdfgen import canvas
+
+from .aruco_helpers import create_detector_params, get_dictionary
+
 
 @dataclass
 class CharucoConfig:
