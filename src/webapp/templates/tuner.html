@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+  <title>Webcam Enhancement Tuner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tuner.css') }}">
+</head>
+<body>
+<header>
+  <h1>Webcam Enhancement Tuner</h1>
+  <div class="tips">
+    If your phone blocks the camera: use HTTPS (ngrok) and allow camera permission.
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="video-wrap">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="c0" class="hidden"></canvas>
+    </div>
+
+    <div class="grid">
+      <canvas id="orig"></canvas>
+      <canvas id="enhColor"></canvas>
+      <canvas id="enhGray"></canvas>
+      <canvas id="binary"></canvas>
+    </div>
+  </section>
+
+  <section class="controls">
+    <div class="row">
+      <label>Resolution</label>
+      <select id="resolution">
+        <option value="640x480">640×480</option>
+        <option value="960x540">960×540</option>
+        <option value="1280x720" selected>1280×720</option>
+      </select>
+      <button id="flip">Flip H</button>
+      <button id="snap">Save PNG</button>
+    </div>
+
+    <div class="row"><label>Contrast α</label><input id="alpha" type="range" min="10" max="300" value="300"><span id="alphaVal">3.00</span></div>
+    <div class="row"><label>Brightness β</label><input id="beta" type="range" min="-100" max="100" value="-100"><span id="betaVal">-100</span></div>
+    <div class="row"><label>Gamma</label><input id="gamma" type="range" min="10" max="300" value="300"><span id="gammaVal">3.00</span></div>
+    <div class="row"><label>Saturation</label><input id="sat" type="range" min="0" max="300" value="0"><span id="satVal">0%</span></div>
+    <div class="row"><label>Sharpness</label><input id="sharp" type="range" min="0" max="200" value="0"><span id="sharpVal">0%</span></div>
+    <div class="row"><label>CLAHE clip</label><input id="clahe" type="range" min="0" max="300" value="0"><span id="claheVal">0.00</span></div>
+    <div class="row">
+      <label>Threshold</label><input id="thr" type="range" min="0" max="255" value="246"><span id="thrVal">246</span>
+      <label class="toggle"><input id="useOtsu" type="checkbox"> Otsu</label>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <a href="/" class="home">← Back</a>
+</footer>
+
+<script src="{{ url_for('static', filename='js/tuner.js') }}"></script>
+</body>
+</html>

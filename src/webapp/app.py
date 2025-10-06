@@ -12,12 +12,19 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from flask import Flask, make_response, render_template, request
+from flask import Flask, make_response, render_template, request, Blueprint
 
 from src.utils.aruco_helpers import create_detector_params, get_dictionary
 
-app = Flask(__name__)
+# Web UI: enhancement tuner (client-only)
+tuner_bp = Blueprint("tuner", __name__, template_folder="templates", static_folder="static")
 
+@tuner_bp.route("/tuner")
+def tuner():
+    return render_template("tuner.html")
+
+app = Flask(__name__)
+app.register_blueprint(tuner_bp, url_prefix="")
 
 def detect_and_annotate(bgr: np.ndarray, dict_name: str = "4X4_50") -> np.ndarray:
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -35,7 +42,8 @@ def detect_and_annotate(bgr: np.ndarray, dict_name: str = "4X4_50") -> np.ndarra
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    #return render_template("index.html")
+    return render_template("tuner.html")
 
 
 @app.post("/detect")
