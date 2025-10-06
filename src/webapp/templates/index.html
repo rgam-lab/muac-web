@@ -9,7 +9,7 @@
     html,body { margin:0; padding:0; height:100%; background:#000; }
     #stage { position:fixed; inset:0; touch-action:manipulation; }
     canvas, video { position:absolute; inset:0; width:100%; object-fit:cover; }
-    #v { opacity:0; } /* hidden video; we draw annotated frames instead */
+    #v { opacity:0; }
     #msg { position:fixed; left:0; right:0; bottom:0; color:#0f0; background:#0007;
            font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; padding:8px 10px; }
   </style>
@@ -17,110 +17,149 @@
 <body>
   <div id="stage">
     <video id="v" autoplay playsinline muted></video>
-    <canvas id="tx"></canvas> <!-- offscreen encoding -->
-    <canvas id="view"></canvas> <!-- annotated display -->
+    <canvas id="tx"></canvas>
+    <canvas id="view"></canvas>
   </div>
-  <div id="msg">Tap twice to pick two points (second tap = point 2). Double-tap to clear. HTTPS required on phones.</div>
+  <div id="msg">Tap twice to pick two points. Double-tap to clear. Distance is metric-locked.</div>
 
   <script>
-    // ------- Config (match your board) -------
-    const BOARD = {
-      dict: "4X4_50",
-      squares_x: 5,
-      squares_y: 7,
-      square_m: 0.02,  // 20 mm
-      marker_m: 0.014, // 14 mm
-    };
-    const POST_EVERY_MS = 120; // throttle network rate
-
-    // ------- DOM -------
+    const BOARD = { dict:"4X4_50", squares_x:5, squares_y:7, square_m:0.02, marker_m:0.014 };
     const v = document.getElementById('v');
-    const tx = document.getElementById('tx'); // encoder
-    const view = document.getElementById('view'); // annotated
-    const ctxT = tx.getContext('2d', { willReadFrequently: true });
+    const tx = document.getElementById('tx');
+    const view = document.getElementById('view');
+    const ctxT = tx.getContext('2d', { willReadFrequently:true });
     const ctxV = view.getContext('2d', { alpha:false });
 
-    // ------- Camera -------
-    async function startCam() {
-      const isSecure = location.protocol === 'https:' || ['localhost','127.0.0.1'].includes(location.hostname);
-      if (!isSecure) {
-        alert('On mobile, camera requires HTTPS (or localhost). Use your ngrok URL.');
-      }
-      const stream = await (navigator.mediaDevices?.getUserMedia
-        ? navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false })
-        : Promise.reject(new Error('getUserMedia not available')));
-      v.srcObject = stream;
-      await new Promise(r => v.onloadedmetadata = r);
-      resize();
-      loop();
-    }
-
-    function resize() {
-      const w = v.videoWidth || 1280, h = v.videoHeight || 720;
-      [tx, view].forEach(c => { c.width = w; c.height = h; });
-    }
+    function resize(){ const w=v.videoWidth||1280, h=v.videoHeight||720; [tx,view].forEach(c=>{ c.width=w; c.height=h; }); }
     window.addEventListener('resize', resize);
 
-    // ------- Click handling (tap twice = 2 points; double-tap clears) -------
-    const pts = [];
-    let lastTapTs = 0;
-    view.addEventListener('pointerdown', (e) => {
-      const now = performance.now();
-      if (now - lastTapTs < 350) { // double tap -> clear
-        pts.length = 0;
-        lastTapTs = 0;
-        return;
-      }
-      lastTapTs = now;
-      // Map page coords to canvas coords
-      const rect = view.getBoundingClientRect();
-      const x = (e.clientX - rect.left) * (view.width / rect.width);
-      const y = (e.clientY - rect.top)  * (view.height / rect.height);
-      pts.push([Math.round(x), Math.round(y)]);
-      if (pts.length > 2) pts.shift();
-    }, { passive:true });
+    async function startCam(){
+      const secure = location.protocol==='https:' || ['localhost','127.0.0.1'].includes(location.hostname);
+      if(!secure) alert('Use HTTPS (ngrok) on mobile for camera access.');
+      const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'} }, audio:false });
+      v.srcObject = stream; await new Promise(r => v.onloadedmetadata = r); resize(); loop();
+    }
 
-    // ------- Networking -------
+    // --- Click handling ---
+    let tapPtsPx = [];           // pixel points we will send to server (updated each frame)
+    let lastTapTs = 0;
+    view.addEventListener('pointerdown', (e)=>{
+      const now = performance.now();
+      if(now - lastTapTs < 350){ tapPtsPx.length = 0; lastTapTs = 0; clearMetricLock(); return; }
+      lastTapTs = now;
+      const rect=view.getBoundingClientRect();
+      const x=(e.clientX-rect.left)*(view.width/rect.width);
+      const y=(e.clientY-rect.top)*(view.height/rect.height);
+      tapPtsPx.push([Math.round(x), Math.round(y)]);
+      if(tapPtsPx.length>2) tapPtsPx.shift();
+      // On first two taps, we'll set metric lock after we receive H from server
+      metricLockPending = (tapPtsPx.length===2);
+    }, {passive:true});
+
+    // --- Metric lock state (board coordinates, meters) ---
+    let metricLock = null;       // { Uc:[ux,uy,1], dU:[dx,dy], Lm:number }
+    let metricLockPending = false;
+
+    function clearMetricLock(){ metricLock = null; metricLockPending = false; }
+
+    // Project board→image: p = H * U  (U = [x,y,1] in meters; p normalized to pixel)
+    function proj(H, U){
+      const x=U[0], y=U[1];
+      const p0 = H[0]*x + H[1]*y + H[2];
+      const p1 = H[3]*x + H[4]*y + H[5];
+      const p2 = H[6]*x + H[7]*y + H[8];
+      const w = p2 || 1e-9;
+      return [ p0/w, p1/w ];
+    }
+    // Inverse: image→board: U = Hinv * p
+    function invProj(Hinv, p){
+      const x=p[0], y=p[1];
+      const u0 = Hinv[0]*x + Hinv[1]*y + Hinv[2];
+      const u1 = Hinv[3]*x + Hinv[4]*y + Hinv[5];
+      const u2 = Hinv[6]*x + Hinv[7]*y + Hinv[8];
+      const w = u2 || 1e-9;
+      return [ u0/w, u1/w, 1 ];
+    }
+
+    // --- Main loop ---
+    const POST_EVERY_MS = 120;
     let lastSent = 0;
-    async function loop() {
-      if (v.readyState >= 2) {
-        const now = performance.now();
-        if (now - lastSent >= POST_EVERY_MS) {
+    let lastH = null, lastHinv = null;
+
+    async function loop(){
+      if(v.readyState>=2){
+        const now=performance.now();
+        if(now-lastSent>=POST_EVERY_MS){
           lastSent = now;
-          // draw current video frame into encoder canvas
+
+          // If we have a metric lock and we received a new H, rebuild pixel endpoints BEFORE sending
+          if(metricLock && lastH){
+            const {Uc, dU, Lm} = metricLock;
+            const u1 = [ Uc[0] - 0.5*Lm*dU[0], Uc[1] - 0.5*Lm*dU[1], 1 ];
+            const u2 = [ Uc[0] + 0.5*Lm*dU[0], Uc[1] + 0.5*Lm*dU[1], 1 ];
+            const p1 = proj(lastH, u1), p2 = proj(lastH, u2);
+            tapPtsPx = [ [Math.round(p1[0]), Math.round(p1[1])],
+                         [Math.round(p2[0]), Math.round(p2[1])] ];
+          }
+
+          // Encode current frame
           ctxT.drawImage(v, 0, 0, tx.width, tx.height);
           const blob = await new Promise(res => tx.toBlob(res, 'image/png'));
+
           const url = new URL('/charuco_detect', location.origin);
           url.searchParams.set('dict', BOARD.dict);
           url.searchParams.set('sx', BOARD.squares_x);
           url.searchParams.set('sy', BOARD.squares_y);
           url.searchParams.set('sq', BOARD.square_m);
           url.searchParams.set('mk', BOARD.marker_m);
-          if (pts.length === 2) {
-            url.searchParams.set('p1', pts[0].join(','));
-            url.searchParams.set('p2', pts[1].join(','));
+          if(tapPtsPx.length===2){
+            url.searchParams.set('p1', tapPtsPx[0].join(','));
+            url.searchParams.set('p2', tapPtsPx[1].join(','));
           }
-          try {
-            const resp = await fetch(url, { method:'POST', body: blob, cache:'no-store' });
-            if (resp.ok) {
+
+          try{
+            const resp = await fetch(url, { method:'POST', body:blob, cache:'no-store' });
+            if(resp.ok){
+              // Read headers: X-H (board→image), X-MPP (not required for lock)
+              const Hhdr = resp.headers.get('X-H');
+              if(Hhdr){
+                const H = Hhdr.split(',').map(Number);
+                lastH = H;
+                // Compute inverse of 3x3 once (adjoint / determinant)
+                const a=H[0],b=H[1],c=H[2], d=H[3],e=H[4],f=H[5], g=H[6],h=H[7],i=H[8];
+                const A =  (e*i - f*h), B = -(d*i - f*g), C =  (d*h - e*g);
+                const D = -(b*i - c*h), E =  (a*i - c*g), F = -(a*h - b*g);
+                const G =  (b*f - c*e), Hh= -(a*f - c*d), I =  (a*e - b*d);
+                const det = a*A + b*B + c*C || 1e-9;
+                lastHinv = [A/det, D/det, G/det, B/det, E/det, Hh/det, C/det, F/det, I/det];
+
+                // If user just tapped 2 points and we were waiting, set the metric lock in board coords
+                if(metricLockPending && tapPtsPx.length===2){
+                  const U1 = invProj(lastHinv, tapPtsPx[0]);
+                  const U2 = invProj(lastHinv, tapPtsPx[1]);
+                  const dUx = U2[0]-U1[0], dUy = U2[1]-U1[1];
+                  const Lm = Math.hypot(dUx, dUy);                 // meters
+                  const norm = Lm || 1e-9;
+                  const dU = [ dUx/norm, dUy/norm ];               // unit dir
+                  const Uc = [ (U1[0]+U2[0])/2, (U1[1]+U2[1])/2, 1 ]; // center (meters)
+                  metricLock = { Uc, dU, Lm };
+                  metricLockPending = false;
+                }
+              }
+
+              // Draw annotated image returned by server
               const buf = await resp.arrayBuffer();
               const img = new Image();
-              img.onload = () => {
-                ctxV.drawImage(img, 0, 0, view.width, view.height);
-                URL.revokeObjectURL(img.src);
-              };
-              img.src = URL.createObjectURL(new Blob([buf], { type:'image/png' }));
+              img.onload = () => { ctxV.drawImage(img, 0, 0, view.width, view.height); URL.revokeObjectURL(img.src); };
+              img.src = URL.createObjectURL(new Blob([buf], {type:'image/png'}));
             }
-          } catch (_) { /* ignore one-off errors */ }
+          }catch(_){/* ignore transient errors */}
         }
       }
       requestAnimationFrame(loop);
     }
 
-    // Start
-    (async () => {
-      try { await startCam(); } catch (e) { alert('Camera error: ' + e); }
-    })();
+    (async()=>{ try{ await startCam(); }catch(e){ alert('Camera error: '+e); } })();
   </script>
 </body>
 </html>

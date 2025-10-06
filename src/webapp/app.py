@@ -15,6 +15,7 @@ import numpy as np
 from flask import Flask, make_response, render_template, request, Blueprint
 
 from src.utils.aruco_helpers import create_detector_params, get_dictionary
+from src.utils.charuco_helpers import estimate_homography_from_charuco
 
 # --- NEW: ChArUco detection/annotation helpers ---
 from src.utils.charuco_helpers import (
@@ -94,25 +95,17 @@ def detect_and_annotate(bgr: np.ndarray, dict_name: str = "4X4_50") -> np.ndarra
 def index():
     return render_template("index.html")
 
-# --- NEW ROUTE: /charuco_detect ---
+# add import
 @app.post("/charuco_detect")
 def charuco_detect():
-    """
-    Expects raw PNG/JPEG frame bytes; query params:
-      dict=4X4_50&sx=5&sy=7&sq=0.02&mk=0.014
-      &p1=x,y&p2=x,y   (optional)
-    Returns annotated PNG.
-    """
     if not request.data:
         return ("No data", 400)
 
-    # Decode frame
     nparr = np.frombuffer(request.data, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return ("Bad image", 400)
 
-    # Params
     dict_name = request.args.get("dict", "4X4_50")
     try:
         sx = int(request.args.get("sx", 5))
@@ -132,14 +125,48 @@ def charuco_detect():
     p1 = parse_pt("p1")
     p2 = parse_pt("p2")
 
-    ann = detect_charuco_and_annotate(img, dict_name, sx, sy, sq, mk, p1, p2)
+    # Detect
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    cfg = CharucoConfig(squares_x=sx, squares_y=sy, square_length_m=sq, marker_length_m=mk, dict_name=dict_name)
+    det = detect_charuco(gray, cfg)
+
+    # Draw board + (optional) incoming p1/p2 for preview
+    ann = draw_charuco(img.copy(), det)
+    mpp = estimate_scale_m_per_px_from_charuco(det, cfg)
+
+    if p1 and p2:
+        cv2.circle(ann, p1, 6, (0, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(ann, p2, 6, (0, 255, 255), -1, cv2.LINE_AA)
+        cv2.line(ann, p1, p2, (0, 200, 255), 2, cv2.LINE_AA)
+        if mpp:
+            dpx = float(np.linalg.norm(np.array(p1, float) - np.array(p2, float)))
+            mm = dpx * mpp * 1000.0
+            circ = np.pi * mm
+            txt = f"D = {mm:.1f} mm   C = {circ:.1f} mm"
+        else:
+            txt = "No metric scale (need more ChArUco corners)"
+        cv2.rectangle(ann, (0, 0), (ann.shape[1], 36), (0, 0, 0), -1)
+        cv2.putText(ann, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 255, 200), 2, cv2.LINE_AA)
+    else:
+        cv2.rectangle(ann, (0, 0), (ann.shape[1], 28), (0, 0, 0), -1)
+        msg = f"Scale: {mpp*1000:.3f} mm/px" if mpp else "Scale: unavailable"
+        cv2.putText(ann, msg, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 220, 255), 1, cv2.LINE_AA)
+
+    # Homography (board→image) and its inverse
+    H, Hinv, n_used = estimate_homography_from_charuco(det, cfg)
 
     ok, out = cv2.imencode(".png", ann)
     if not ok:
         return ("Encode failed", 500)
+
     resp = make_response(out.tobytes())
     resp.headers["Content-Type"] = "image/png"
     resp.headers["Cache-Control"] = "no-store"
+    if mpp:
+        resp.headers["X-MPP"] = f"{mpp:.9g}"
+    if H is not None:
+        # 3x3 → 9 comma-separated
+        resp.headers["X-H"] = ",".join(f"{v:.9g}" for v in H.reshape(-1))
     return resp
 
 @app.post("/detect")
