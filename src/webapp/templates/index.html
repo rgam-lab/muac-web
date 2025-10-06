@@ -1,125 +1,126 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>ArUco Web Demo</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"/>
+  <title>ChArUco Measure</title>
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 1rem; }
-    .row { display: flex; gap: 1rem; flex-wrap: wrap; }
-    video, canvas, img { max-width: 100%; height: auto; border: 1px solid #ccc; }
-    .controls { margin: 0.5rem 0; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-    label { font-size: 0.9rem; }
-    .warn { color: #b35; font-weight: 600; }
+    html,body { margin:0; padding:0; height:100%; background:#000; }
+    #stage { position:fixed; inset:0; touch-action:manipulation; }
+    canvas, video { position:absolute; inset:0; width:100%; object-fit:cover; }
+    #v { opacity:0; } /* hidden video; we draw annotated frames instead */
+    #msg { position:fixed; left:0; right:0; bottom:0; color:#0f0; background:#0007;
+           font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; padding:8px 10px; }
   </style>
 </head>
 <body>
-  <h1>ArUco Web Demo</h1>
-  <p>Live camera in browser → send frames to server → get annotated result.</p>
-
-  <div class="controls">
-    <label>Dictionary:
-      <select id="dict">
-        <option>4X4_50</option>
-        <option>5X5_100</option>
-        <option>6X6_250</option>
-        <option>7X7_1000</option>
-        <option>APRILTAG_36h11</option>
-      </select>
-    </label>
-    <button id="startBtn">Start</button>
-    <button id="stopBtn" disabled>Stop</button>
-    <span id="status"></span>
+  <div id="stage">
+    <video id="v" autoplay playsinline muted></video>
+    <canvas id="tx"></canvas> <!-- offscreen encoding -->
+    <canvas id="view"></canvas> <!-- annotated display -->
   </div>
-
-  <p class="warn" id="httpsHint" style="display:none;">
-    Tip: On mobile, camera only works over HTTPS (or localhost). Use a tunnel (ngrok/Cloudflare) or run with a trusted cert.
-  </p>
-
-  <div class="row">
-    <video id="video" autoplay playsinline muted width="480" height="360"></video>
-    <canvas id="canvas" width="480" height="360" style="display:none;"></canvas>
-    <img id="annotated" alt="Annotated frame will appear here" />
-  </div>
+  <div id="msg">Tap twice to pick two points (second tap = point 2). Double-tap to clear. HTTPS required on phones.</div>
 
   <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const annotated = document.getElementById('annotated');
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const dictSel = document.getElementById('dict');
-    const statusEl = document.getElementById('status');
-    const httpsHint = document.getElementById('httpsHint');
+    // ------- Config (match your board) -------
+    const BOARD = {
+      dict: "4X4_50",
+      squares_x: 5,
+      squares_y: 7,
+      square_m: 0.02,  // 20 mm
+      marker_m: 0.014, // 14 mm
+    };
+    const POST_EVERY_MS = 120; // throttle network rate
 
-    // Show HTTPS hint if not secure and not localhost.
-    const isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    if (!isSecure) httpsHint.style.display = 'block';
+    // ------- DOM -------
+    const v = document.getElementById('v');
+    const tx = document.getElementById('tx'); // encoder
+    const view = document.getElementById('view'); // annotated
+    const ctxT = tx.getContext('2d', { willReadFrequently: true });
+    const ctxV = view.getContext('2d', { alpha:false });
 
-    // Promise-based fallback for older Safari (webkitGetUserMedia)
-    function getUserMediaCompat(constraints) {
-      const nav = navigator;
-      if (nav.mediaDevices && typeof nav.mediaDevices.getUserMedia === 'function') {
-        return nav.mediaDevices.getUserMedia(constraints);
+    // ------- Camera -------
+    async function startCam() {
+      const isSecure = location.protocol === 'https:' || ['localhost','127.0.0.1'].includes(location.hostname);
+      if (!isSecure) {
+        alert('On mobile, camera requires HTTPS (or localhost). Use your ngrok URL.');
       }
-      const legacy = nav.getUserMedia || nav.webkitGetUserMedia || nav.mozGetUserMedia;
-      if (legacy) {
-        return new Promise((resolve, reject) => legacy.call(nav, constraints, resolve, reject));
-      }
-      return Promise.reject(new Error('getUserMedia is not available on this browser. Use HTTPS and a modern browser.'));
+      const stream = await (navigator.mediaDevices?.getUserMedia
+        ? navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:'environment' } }, audio:false })
+        : Promise.reject(new Error('getUserMedia not available')));
+      v.srcObject = stream;
+      await new Promise(r => v.onloadedmetadata = r);
+      resize();
+      loop();
     }
 
-    let stream = null;
-    let rafId = null;
-    let running = false;
+    function resize() {
+      const w = v.videoWidth || 1280, h = v.videoHeight || 720;
+      [tx, view].forEach(c => { c.width = w; c.height = h; });
+    }
+    window.addEventListener('resize', resize);
 
-    async function start() {
-      try {
-        // Use ideal constraint so browser can choose if environment camera isn’t available
-        stream = await getUserMediaCompat({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-        video.srcObject = stream;
-        running = true;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        statusEl.textContent = 'Running…';
-        loop();
-      } catch (e) {
-        statusEl.textContent = '';
-        alert('Camera error: ' + e);
+    // ------- Click handling (tap twice = 2 points; double-tap clears) -------
+    const pts = [];
+    let lastTapTs = 0;
+    view.addEventListener('pointerdown', (e) => {
+      const now = performance.now();
+      if (now - lastTapTs < 350) { // double tap -> clear
+        pts.length = 0;
+        lastTapTs = 0;
+        return;
       }
-    }
+      lastTapTs = now;
+      // Map page coords to canvas coords
+      const rect = view.getBoundingClientRect();
+      const x = (e.clientX - rect.left) * (view.width / rect.width);
+      const y = (e.clientY - rect.top)  * (view.height / rect.height);
+      pts.push([Math.round(x), Math.round(y)]);
+      if (pts.length > 2) pts.shift();
+    }, { passive:true });
 
-    function stop() {
-      running = false;
-      cancelAnimationFrame(rafId);
-      if (stream) stream.getTracks().forEach(t => t.stop());
-      startBtn.disabled = false;
-      stopBtn.disabled = true;
-      statusEl.textContent = 'Stopped';
-    }
-
+    // ------- Networking -------
+    let lastSent = 0;
     async function loop() {
-      if (!running) return;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-      const dict = dictSel.value;
-      try {
-        const resp = await fetch(`/detect?dict=${encodeURIComponent(dict)}`, { method: 'POST', body: blob });
-        if (resp.ok) {
-          const buf = await resp.arrayBuffer();
-          annotated.src = URL.createObjectURL(new Blob([buf], { type: 'image/png' }));
-        } else {
-          statusEl.textContent = 'Server error';
+      if (v.readyState >= 2) {
+        const now = performance.now();
+        if (now - lastSent >= POST_EVERY_MS) {
+          lastSent = now;
+          // draw current video frame into encoder canvas
+          ctxT.drawImage(v, 0, 0, tx.width, tx.height);
+          const blob = await new Promise(res => tx.toBlob(res, 'image/png'));
+          const url = new URL('/charuco_detect', location.origin);
+          url.searchParams.set('dict', BOARD.dict);
+          url.searchParams.set('sx', BOARD.squares_x);
+          url.searchParams.set('sy', BOARD.squares_y);
+          url.searchParams.set('sq', BOARD.square_m);
+          url.searchParams.set('mk', BOARD.marker_m);
+          if (pts.length === 2) {
+            url.searchParams.set('p1', pts[0].join(','));
+            url.searchParams.set('p2', pts[1].join(','));
+          }
+          try {
+            const resp = await fetch(url, { method:'POST', body: blob, cache:'no-store' });
+            if (resp.ok) {
+              const buf = await resp.arrayBuffer();
+              const img = new Image();
+              img.onload = () => {
+                ctxV.drawImage(img, 0, 0, view.width, view.height);
+                URL.revokeObjectURL(img.src);
+              };
+              img.src = URL.createObjectURL(new Blob([buf], { type:'image/png' }));
+            }
+          } catch (_) { /* ignore one-off errors */ }
         }
-      } catch (e) {
-        statusEl.textContent = 'Network error';
       }
-      rafId = requestAnimationFrame(loop);
+      requestAnimationFrame(loop);
     }
 
-    startBtn.addEventListener('click', start);
-    stopBtn.addEventListener('click', stop);
+    // Start
+    (async () => {
+      try { await startCam(); } catch (e) { alert('Camera error: ' + e); }
+    })();
   </script>
 </body>
 </html>

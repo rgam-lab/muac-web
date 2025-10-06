@@ -33,7 +33,7 @@ run-webapp:
 	FLASK_APP=src/webapp/app.py $(PY) -m flask run --host 0.0.0.0 -p $(PORT)
 
 host:
-	http --hostname=$(HOSTNAME) $(PORT)
+	ngrok http --hostname=$(HOSTNAME) $(PORT)
 
 test:
 	$(PY) -m pytest
